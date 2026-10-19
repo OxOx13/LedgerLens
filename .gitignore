@@ -81,6 +81,7 @@ Thumbs.db
 desktop.ini
 
 # Ensure essential project resources and tests are tracked
+!requirements.txt
 !data/
 !data/*.csv
 !tests/

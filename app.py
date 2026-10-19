@@ -21,6 +21,7 @@ import io
 import json
 import sqlite3
 import tempfile
+import uuid
 from decimal import Decimal
 from pathlib import Path
 from typing import Any
@@ -52,10 +53,38 @@ from ledgerlens.sql_reports import (
 # Database Helpers
 # ---------------------------------------------------------------------------
 
-DB_PATH = Path("ledgerlens.db")
+SESSION_DB_DIR = Path(tempfile.gettempdir()) / "ledgerlens_sessions"
+MAX_UPLOAD_SIZE_MB = 5
+MAX_UPLOAD_SIZE_BYTES = MAX_UPLOAD_SIZE_MB * 1024 * 1024
 
 
-def get_db(db_path: Path = DB_PATH) -> sqlite3.Connection:
+def get_session_db_path() -> Path:
+    """Return a stable, session-unique SQLite database path managed in st.session_state."""
+    SESSION_DB_DIR.mkdir(parents=True, exist_ok=True)
+    if "session_id" not in st.session_state:
+        st.session_state["session_id"] = uuid.uuid4().hex[:12]
+
+    if "session_db_path" not in st.session_state:
+        db_path = SESSION_DB_DIR / f"session_{st.session_state['session_id']}.db"
+        st.session_state["session_db_path"] = str(db_path)
+
+    return Path(st.session_state["session_db_path"])
+
+
+def cleanup_session_db(db_path: Path) -> None:
+    """Safely unlink a session SQLite database and any associated journal/WAL files."""
+    for suffix in ("", "-journal", "-wal", "-shm"):
+        p = Path(str(db_path) + suffix)
+        try:
+            p.unlink(missing_ok=True)
+        except Exception:
+            pass
+
+
+def get_db(db_path: Path | None = None) -> sqlite3.Connection:
+    """Get an initialized SQLite connection to the session or specified database."""
+    if db_path is None:
+        db_path = get_session_db_path()
     conn = get_connection(db_path)
     init_db(conn)
     return conn
@@ -206,9 +235,14 @@ def run_dashboard():
         unsafe_allow_html=True,
     )
 
-    conn = get_db()
+    session_db_path = get_session_db_path()
+    conn = get_db(session_db_path)
 
     # Session State Initialization
+    if "session_id" not in st.session_state:
+        st.session_state["session_id"] = uuid.uuid4().hex[:12]
+    if "session_db_path" not in st.session_state:
+        st.session_state["session_db_path"] = str(session_db_path)
     if "active_run_id" not in st.session_state:
         st.session_state["active_run_id"] = None
     if "selected_int_batch" not in st.session_state:
@@ -247,14 +281,26 @@ def run_dashboard():
                     st.session_state["notification_msg"] = ("error", f"Import failed: {ex}")
 
         else:
-            st.caption("Upload separate Internal and Bank CSVs:")
+            st.caption(f"Upload separate Internal and Bank CSVs (Max {MAX_UPLOAD_SIZE_MB} MB each):")
             up_internal = st.file_uploader("Internal Ledger CSV", type=["csv"], key="uploader_int")
             up_bank = st.file_uploader("Bank Statement CSV", type=["csv"], key="uploader_bank")
 
             if st.button("📥 Import Uploaded Files", use_container_width=True):
                 if not up_internal or not up_bank:
                     st.error("Please upload both Internal and Bank CSV files.")
+                elif up_internal.size > MAX_UPLOAD_SIZE_BYTES:
+                    st.error(
+                        f"Internal CSV exceeds maximum allowed demo size of {MAX_UPLOAD_SIZE_MB} MB "
+                        f"({up_internal.size:,} bytes)."
+                    )
+                elif up_bank.size > MAX_UPLOAD_SIZE_BYTES:
+                    st.error(
+                        f"Bank CSV exceeds maximum allowed demo size of {MAX_UPLOAD_SIZE_MB} MB "
+                        f"({up_bank.size:,} bytes)."
+                    )
                 else:
+                    f_int_path = None
+                    f_bank_path = None
                     try:
                         with tempfile.NamedTemporaryFile(delete=False, suffix=".csv") as f_int:
                             f_int.write(up_internal.getvalue())
@@ -267,9 +313,6 @@ def run_dashboard():
                         b_int, is_new_int = import_csv_to_db(conn, f_int_path, "internal")
                         b_bank, is_new_bank = import_csv_to_db(conn, f_bank_path, "bank")
 
-                        f_int_path.unlink(missing_ok=True)
-                        f_bank_path.unlink(missing_ok=True)
-
                         st.session_state["selected_int_batch"] = b_int
                         st.session_state["selected_bank_batch"] = b_bank
 
@@ -281,6 +324,11 @@ def run_dashboard():
                         st.rerun()
                     except Exception as ex:
                         st.session_state["notification_msg"] = ("error", f"Import failed: {ex}")
+                    finally:
+                        if f_int_path and f_int_path.exists():
+                            f_int_path.unlink(missing_ok=True)
+                        if f_bank_path and f_bank_path.exists():
+                            f_bank_path.unlink(missing_ok=True)
 
         st.markdown("---")
         st.subheader("2. Select Batches to Reconcile")
@@ -348,10 +396,35 @@ def run_dashboard():
                 except Exception as ex:
                     st.session_state["notification_msg"] = ("error", f"Reconciliation failed: {ex}")
 
+        st.markdown("---")
+        st.subheader("4. Session Control")
+        st.caption(f"Session ID: `{st.session_state.get('session_id', 'unknown')}`")
+        st.caption("Each browser session runs an isolated temporary SQLite database.")
+        if st.button("🔄 Reset Session Data", use_container_width=True, help="Clear this session's database and selections"):
+            try:
+                conn.close()
+            except Exception:
+                pass
+            cleanup_session_db(session_db_path)
+            for k in ["active_run_id", "selected_int_batch", "selected_bank_batch", "session_id", "session_db_path"]:
+                st.session_state.pop(k, None)
+            st.session_state["notification_msg"] = (
+                "info",
+                "Session data has been cleared. A fresh isolated session database is ready.",
+            )
+            st.rerun()
+
     # Main Content
     st.title("LedgerLens 🔍 Financial Reconciliation Dashboard")
     st.caption(
         "Automated reconciliation, data-quality auditing, and algebraic cash movement verification."
+    )
+
+    st.info(
+        "ℹ️ **Portfolio Demo Notice**: This dashboard is an interactive demo for transaction-level reconciliation. "
+        "Please use **fictional data only**. All records are stored in a temporary, isolated SQLite database unique "
+        "to this browser session. Session data is temporary and may reset after a page refresh, disconnect, server restart, "
+        "or by clicking **Reset Session Data**."
     )
 
     if st.session_state["notification_msg"]:
@@ -367,6 +440,7 @@ def run_dashboard():
             "👋 Welcome! To begin, click **'Import Sample Data'** in the sidebar to load the "
             "fictional datasets and run reconciliation."
         )
+        conn.close()
         return
 
     # Section A: Pre-Reconciliation Data Quality & Previews
@@ -430,6 +504,7 @@ def run_dashboard():
 
     if active_run_id is None:
         st.warning("👈 Click **'Run Reconciliation'** in the sidebar to perform matching and generate reports.")
+        conn.close()
         return
 
     overview = get_reconciliation_overview(conn, active_run_id)
@@ -705,6 +780,7 @@ def run_dashboard():
             )
 
     st.caption("LedgerLens Milestone 3 — Local Streamlit Dashboard. Standard Library + Streamlit.")
+    conn.close()
 
 
 if __name__ == "__main__":

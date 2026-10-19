@@ -172,23 +172,25 @@ The Streamlit dashboard (`app.py`) serves as a visual, reactive user interface l
 ```
 
 1. **Ingestion & Validation**:
-   When the user clicks **"Import Sample Data"** or **"Import Uploaded Files"**, `app.py` calls `import_csv_to_db()`. This function parses rows with `load_csv()`, catches invalid dates, malformed amounts, or fractional cents into `validation_errors`, separates repeated IDs with `find_duplicates()`, and atomically writes to SQLite using integer cents.
-2. **Batch Selection & Metadata**:
-   `app.py` queries `get_batches(conn, "internal")` and `get_batches(conn, "bank")` to populate selectboxes with batch IDs, source filenames, and import timestamps.
-3. **On-Demand Reconciliation**:
+   When the user clicks **"Import Sample Data"** or **"Import Uploaded Files"**, `app.py` calls `import_csv_to_db()`. This function parses rows with `load_csv()`, catches invalid dates, malformed amounts, or fractional cents into `validation_errors`, separates repeated IDs with `find_duplicates()`, and atomically writes to the session-isolated SQLite database using integer cents. Uploaded CSVs are capped at 5 MB and temporary upload files are cleaned up immediately following import.
+2. **Session Isolation & Lifecycle**:
+   Every browser session is allocated a unique temporary SQLite database file (`ledgerlens_sessions/session_<session_id>.db`) in the OS temporary directory, managed through `st.session_state`. Its path remains stable across reruns within that session. Clicking **"Reset Session Data"** closes all open connections and unlinks that session's temporary SQLite database and journal files, leaving other sessions and the persistent CLI database (`ledgerlens.db`) completely unaffected.
+3. **Batch Selection & Metadata**:
+   `app.py` queries `get_batches(conn, "internal")` and `get_batches(conn, "bank")` against the session database to populate selectboxes with batch IDs, source filenames, and import timestamps.
+4. **On-Demand Reconciliation**:
    Reconciliation only executes when the user clicks **"Run Reconciliation"**. `app.py` calls `reconcile_batches_in_db(conn, int_batch_id, bank_batch_id)`, storing the resulting `run_id` in `st.session_state`. This guarantees that Streamlit reruns (such as table searching or chart interaction) never duplicate batches or runs.
-4. **Financial Verification & Display**:
+5. **Financial Verification & Display**:
    `app.py` calls `get_reconciliation_overview(conn, run_id)` to evaluate:
    - **Net Cash Movements Equal?** Checks if raw internal cash net equals bank cash net (`net_difference == Decimal("0.00")`).
    - **Difference fully explained?** Verifies the algebraic proof that conflicts and unmatched items account for 100% of the net variance.
-5. **Chart Transformation**:
+6. **Chart Transformation**:
    Monthly cash movement figures are fetched via `get_monthly_cash_movements(conn, batch_ids)`. Mathematical integrity is preserved in Decimal/cents; values are cast to float only at the moment of chart plotting. Excluded duplicates are charted and flagged under **"Excluded Duplicate Records"**, distinct from confirmed cash movements.
 
 ---
 
 ## Running Tests
 
-LedgerLens maintains 59 comprehensive unit and integration tests across all modules:
+LedgerLens maintains 66 comprehensive unit and integration tests across all modules:
 
 ```bash
 # Run tests using the project virtual environment or system Python
@@ -202,6 +204,7 @@ The test suite covers:
 - **`test_database.py`**: Integer cents conversions, fractional cent rejection, non-finite rejection, idempotent SHA-256 hashing, atomic rollback on database failure, row-level validation error persistence, foreign-key tracing, and verification against Milestone 1 numbers (13 tests).
 - **`test_sql_reports.py`**: Monthly cash movements (accepted vs excluded), unmatched counts and signed totals, amount conflicts with row-level tracing, data quality metrics, and SQL algebraic proof (5 tests).
 - **`test_dashboard_integration.py`**: Streamlit dashboard backend queries, metadata tracing, search filtering logic, Decimal preservation during chart prep, and separation of "Net Cash Movements Equal" from "Difference fully explained" (7 tests).
+- **`test_session_isolation.py`**: Multi-session isolation, preventing cross-session data leaks, isolated session reset without deleting neighboring session records, CLI persistent database preservation, upload size limits (5 MB), upload temp file cleanup, and session database path stability across reruns (6 tests).
 
 ---
 
