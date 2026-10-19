@@ -1,0 +1,11 @@
+transaction_id,date,description,amount,currency
+TXN-001,2026-03-15,Client payment - Acme Corp,5000.00,USD
+TXN-002,2026-03-16,Office supplies - Staples order,-249.99,USD
+TXN-003,2026-03-17,Consulting fee - Beta Industries,12000.00,USD
+TXN-004,2026-03-18,SaaS license - CloudTools Pro,-99.00,USD
+TXN-005,2026-03-19,Wire transfer - Gamma Ltd,3200.50,USD
+TXN-005,2026-03-20,Wire transfer - Delta Co,1500.00,USD
+TXN-006,2026-31-03,Inventory purchase,-4200.00,USD
+TXN-007,2026-03-22,Client refund - Epsilon LLC,abc,USD
+TXN-008,2026-03-23,Conference registration - DevCon,-750.00,USD
+TXN-009,2026-03-24,Interest income,42.17,USD
